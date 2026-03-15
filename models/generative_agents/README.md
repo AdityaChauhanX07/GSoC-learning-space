@@ -1,55 +1,60 @@
-# Generative Agents — Mesa-LLM Skeleton
+# Generative Agents - Mesa-LLM Skeleton
 
-A minimal implementation of the [Generative Agents](https://arxiv.org/abs/2304.03442) (Park et al., 2023) architecture using mesa-llm.
+A skeleton implementation of [Generative Agents](https://arxiv.org/abs/2304.03442) (Park et al., 2023) using mesa-llm. This maps the paper's core architecture onto mesa-llm's existing primitives to see what works, what's missing, and what a full implementation would need.
 
-## What this is
+## What it does
 
-Three agents live in a small town:
-- **Maria** — cafe owner, warm, chatty, knows everyone
-- **James** — novelist, introverted, observant, moved here for quiet
-- **Lily** — college student, new in town, trying to make friends
+Three agents live in a small town on a 5x5 grid:
+- **Maria** - cafe owner, warm, chatty, knows everyone
+- **James** - novelist, introverted, observant, moved here for quiet
+- **Lily** - college student, new in town, trying to make friends
 
-Each step, agents observe their surroundings, plan actions through chain-of-thought reasoning, move around or talk to neighbors, and periodically reflect on their experiences. Social dynamics emerge from the interaction of personas, memory, and proximity.
+Each step, agents observe who's nearby, plan their next action through chain-of-thought reasoning, move around or talk to neighbors, and every 2 steps they reflect on recent experiences. The reflections get fed back into future decisions, so agents build up opinions about each other over time.
 
-## How it maps to the paper
+## How the paper maps to mesa-llm
 
-| Paper Component | Mesa-LLM Primitive | Notes |
-|---|---|---|
-| Observation | `LLMAgent.generate_obs()` | Builds self_state + local_state from grid neighbors |
-| Planning | `CoTReasoning.plan()` | Structured chain-of-thought → tool call execution |
-| Memory Stream | `STLTMemory` | Short-term buffer + LLM-summarized long-term memory |
-| Reflection | `GenerativeAgent._reflect()` | Direct LLM call to synthesize recent memory into insights |
-| Action | `apply_plan()` → `move_one_step`, `speak_to` | Built-in mesa-llm tools for movement and communication |
+The Generative Agents paper has three core components: observation, planning, and reflection.
 
-## What a full implementation would add
+**Observation** maps cleanly to `LLMAgent.generate_obs()`, which builds a self_state (who am I, where am I) and local_state (who's nearby and what are they like).
 
-- **Retrieval-based memory** — score memories by recency × importance × relevance (Section 4.2 of the paper)
-- **Reflection trees** — synthesize observations into higher-level insights, triggered by importance thresholds
-- **Hourly schedule planning** — recursive decomposition from day plan → hour blocks → 5-minute actions
-- **Spatial awareness** — named locations (cafe, park, library) instead of raw grid coordinates
-- **Multi-day simulation** — day/night cycles with sleep, morning planning, evening reflection
+**Planning** works through `CoTReasoning.plan()`. The agent thinks step-by-step then executes a tool call (move somewhere or talk to someone).
+
+**Memory** uses mesa-llm's `STLTMemory`, which keeps a short-term buffer of recent events and summarizes older ones into long-term memory using the LLM.
+
+**Reflection** is where it gets hacky. The paper has agents synthesize memories into higher-level insights ("Maria seems to know everyone in town, she'd be good to ask about local events"). Mesa-llm doesn't have a reflection primitive, so I call `self.llm.generate()` directly to get the agent to synthesize its recent memory into a one-sentence takeaway. Same bypass workaround as my other two models.
+
+**Action** uses the built-in `move_one_step` and `speak_to` tools through `apply_plan()`.
+
+## What a full version would need
+
+The skeleton is missing a lot of what makes the paper work:
+- Retrieval-based memory scoring (recency x importance x relevance) instead of just FIFO
+- Reflection trees that trigger based on importance thresholds, not just every N steps
+- Hourly schedule planning with recursive decomposition (day plan -> hour blocks -> 5-min actions)
+- Named locations (cafe, park, library) instead of raw grid coordinates
+- Multi-day simulation with sleep, morning planning, evening reflection
 
 ## Running
 
 ```bash
-# With Ollama (default: llama3.2)
+# default: ollama/llama3.2, 4 steps
 python model.py
 
-# With a specific model and step count
+# different model and step count
 python model.py ollama/gemma3:4b 6
 
-# With OpenAI
+# with OpenAI
 python model.py openai/gpt-4o-mini 4
 ```
 
-## mesa-llm findings from building this
+## What I found building this
 
-1. **Reflection requires bypassing the reasoning system** — `self.reasoning.plan()` always injects tool schemas and forces a tool call via `tool_choice="required"`. For pure text generation (like reflection), you have to call `self.llm.generate(prompt=...)` directly. Same workaround as the `llm_wealth_distribution` model.
+**Reflection needs the reasoning bypass.** `self.reasoning.plan()` always injects tool schemas and forces a tool call via `tool_choice="required"`. For pure text generation like reflection, you have to call `self.llm.generate(prompt=...)` directly. I hit this same wall in both previous models. Mesa-llm really needs a way to do text-only LLM calls through the reasoning system.
 
-2. **STLTMemory as a proxy for the memory stream** — the paper's memory stream scores every observation by recency, importance, and relevance. Mesa-llm's STLTMemory only does recency (FIFO buffer) + summarization. A production implementation would need a custom Memory subclass with vector similarity retrieval.
+**STLTMemory is a rough proxy for the paper's memory stream.** The paper scores every observation by recency, importance, and relevance. STLTMemory only does recency (FIFO buffer) plus LLM summarization of old memories. A real implementation would need a custom Memory subclass with vector similarity retrieval.
 
-3. **`selected_tools=[]` bug still affects this model** — without the fix from PR #[TBD], agents that should only reflect or observe still get movement/teleport tools injected. The fix (changing `if selected_tools:` to `if selected_tools is not None:`) resolves this.
+**selected_tools=[] bug (issue #148) still bites.** Agents that should only reflect or observe still get movement/teleport tools injected. The fix I submitted (changing `if selected_tools:` to `if selected_tools is not None:` in ToolManager) resolves this.
 
-4. **Per-agent LLM client creation** — each of the 3 agents + their STLTMemory creates a separate LLM client (6 total for 3 agents). For Ollama this means 6 model load warnings. Related to issue #200.
+**Per-agent LLM clients add up fast.** Each of the 3 agents plus their STLTMemory creates a separate LLM client, so that's 6 total for just 3 agents. With Ollama you get 6 model load warnings at startup. Related to issue #200.
 
-5. **Ollama produces string-encoded JSON for tool arguments** — when Ollama calls `teleport_to_location`, it sends `"[1, 2]"` (a string) instead of `[1, 2]` (an actual list). This causes `too many values to unpack` when mesa-llm tries to use it as coordinates. Same issue with `speak_to` — `listener_agents_unique_ids` arrives as a string, so the `in` operator fails. The model still runs because errors are caught and the simulation continues, but tool actions silently fail. Related to issue #173 (JSON validation).
+**Ollama sends string-encoded JSON for tool arguments.** When Ollama calls `teleport_to_location`, it sends `"[1, 2]"` (a string) instead of `[1, 2]` (an actual list). This causes `too many values to unpack` when mesa-llm tries to use it as coordinates. Same thing with `speak_to` where `listener_agents_unique_ids` arrives as a string, so the `in` operator fails. The model keeps running because errors are caught, but tool actions silently fail. Related to issue #173 (JSON validation).

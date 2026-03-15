@@ -1,37 +1,26 @@
 # LLM Wealth Distribution
 
-A Mesa agent-based model where agents use LLM reasoning to decide 
-how much wealth to share with neighbors — instead of giving randomly 
-as in the classic Boltzmann wealth model.
+Agents use LLM reasoning to decide how much wealth to share with neighbors, instead of giving randomly like in the classic Boltzmann wealth model.
 
-No API key required. Runs fully local with Ollama.
+Runs fully local with Ollama, no API key needed.
 
-## The Classic Model vs This Model
+## Classic model vs this one
 
-In the classic Boltzmann wealth model, agents give randomly: if you 
-have any wealth, pick a neighbor and give 1 unit. No thought, purely 
-stochastic. The result is emergent inequality from pure randomness.
+In the classic Boltzmann wealth model, if you have any money, you pick a random neighbor and give them 1 unit. No thinking involved, just randomness. The interesting result is that inequality emerges from pure chance.
 
-Here, each agent receives its current wealth and neighbor count, then 
-reasons about how much to give and why. Instead of "flip a coin, give 
-a coin," it's "think about your situation, decide what makes sense." 
-Agents can give varying amounts or nothing at all if they reason that's 
-smarter.
+This model changes the giving rule. Each agent gets told its current wealth and how many neighbors it has, then reasons about how much to give and why. Agents can give different amounts or nothing at all if they think that's the better move.
 
-The question: does reasoned giving produce more or less inequality 
-than random giving?
+The question: does reasoned giving produce more or less inequality than random giving?
 
-## How to Run
+## How to run
 
-Requirements:
-- Ollama running locally with llama3.2 pulled
-- mesa-llm installed
 ```bash
 ollama pull llama3.2
 python model.py
 ```
 
-## Sample Output
+## Sample output
+
 ```
 --- Initial Wealth ---
 All agents: 10 units each (total: 60)
@@ -48,43 +37,21 @@ Distribution: [16, 14, 10, 7, 7, 6]
 Total wealth preserved: 60
 ```
 
-## What This Shows
+## What's interesting here
 
-A few things are immediately interesting:
+The agents gave very different amounts. Agent 2 gave away 7 out of 10, Agent 5 only gave 3. Their reasoning varied: retaliatory giving, negotiating power, reciprocity. You get meaningful inequality after just one step, and you can read exactly why each agent made their choice. The random model can never give you that.
 
-The agents gave very different amounts. Agent 2 gave away 7 out of 10 
-while Agent 5 only gave 3. Their reasoning varied: retaliatory giving, 
-negotiating power, reciprocity. The final distribution shows meaningful 
-inequality after just one step — and you can read exactly why each 
-agent made their choice. That's something the random model can never 
-give you.
+Total wealth stayed at 60, so the transfer logic is correct. No money created or destroyed.
 
-Total wealth was preserved at 60, confirming the transfer logic is 
-correct — no money created or destroyed.
+## What I learned building this
 
-## Friction Points and What I Learned
+**Issue #148 hit me again.** The reasoning framework injects tool schemas into all LLM responses, even when you pass `selected_tools=[]`. This broke my simple "give me a number" interaction completely. I had to call `self.llm.generate()` directly, bypassing the reasoning system. Same workaround as the hello_llm_agent model. This is a real usability problem for anyone who wants simple text-only LLM interactions.
 
-**Issue #148 — tool injection**: The reasoning framework injects 
-tool-use formatting into all LLM responses, even when you pass 
-`selected_tools=[]`. This broke the simple "give me a number" 
-interaction entirely. The workaround is calling `self.llm.generate()` 
-directly, bypassing the reasoning system. This is documented in the 
-agent docstring and is a real usability problem for researchers who 
-want simple text-only LLM interactions.
+**Structured output parsing is hard.** Getting an LLM to reliably return `GIVE: <number> | REASON: <text>` without going off-script requires defensive parsing. My `_parse_amount()` method handles malformed responses gracefully. This pattern should probably be built into mesa-llm's core.
 
-**Structured output parsing**: Getting an LLM to reliably return 
-`GIVE: <number> | REASON: <text>` without going off-script requires 
-defensive parsing. The `_parse_amount()` method handles malformed 
-responses gracefully — a pattern that should probably be built into 
-mesa-llm's core.
+**Per-agent LLM clients are noisy.** The 12 repeated "Using default Ollama API base" warnings come from each agent creating its own LLM client on init. 6 agents = 12 warnings (agent + memory each get a client). For 50 agents in a real simulation this would be both noisy and wasteful. A shared client pool would help.
 
-**Per-agent LLM clients**: The 12 repeated "Using default Ollama API 
-base" warnings show each agent creates its own LLM client on 
-initialization. For 6 agents that's 12 warnings. For 50 agents in a 
-real simulation, this is both noisy and wasteful. A shared LLM client 
-pool would be a meaningful performance improvement.
-
-## Related Issues
-- #148 — ToolManager exposes all tools regardless of selected_tools
-- #152 — mesa.space removed in Mesa 4.0 (this model uses Mesa 3.5 API)
-- #200 — Performance issues with per-agent LLM client creation
+## Related issues
+- #148 - ToolManager exposes all tools regardless of selected_tools
+- #152 - mesa.space removed in Mesa 4.0 (this model uses Mesa 3.5 API)
+- #200 - Performance issues with per-agent LLM client creation
